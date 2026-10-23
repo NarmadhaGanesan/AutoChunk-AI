@@ -1,4 +1,4 @@
-# Standalone Chunking Method Recommender
+#AutoChunk AI for RAG Systems
 
 A small Python project that analyzes document structure and recommends either **hierarchical** or **recursive** chunking for RAG systems.
 

@@ -33,6 +33,16 @@ except ImportError:
     pypandoc = None
 
 try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+try:
     from . import constants
     from .models import Doc, Line
 except ImportError:  # supports running/importing these three files from one folder
@@ -141,6 +151,30 @@ def read_docx_document(path: str) -> Doc:
     return _text_to_doc(path, text)
 
 
+def read_image_document(path: str) -> Doc:
+    """Extract OCR text from scanned documents and images, then score it like text."""
+    if Image is None:
+        raise ImportError(
+            "Image OCR requires Pillow. Install it with: pip install Pillow pytesseract"
+        )
+    if pytesseract is None:
+        raise ImportError(
+            "Image OCR requires pytesseract. Install it with: pip install Pillow pytesseract"
+        )
+
+    try:
+        image = Image.open(path)
+        try:
+            text = pytesseract.image_to_string(image)
+        finally:
+            image.close()
+    except Exception as exc:
+        raise RuntimeError(f"OCR failed for image '{path}': {exc}") from exc
+
+    cleaned = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    return _text_to_doc(path, cleaned)
+
+
 def get_supported_extension(path: str) -> str:
     ext = Path(path).suffix.lower()
     if ext not in constants.SUPPORTED_EXTENSIONS:
@@ -157,7 +191,9 @@ def read_document(path: str, max_pages: int = constants.MAX_PAGES) -> Doc:
         return read_docx_document(path)
     if ext in constants.TEXT_EXTENSIONS:
         return read_text_document(path)
-    raise ValueError(f"Image file '{ext}' has no text structure to read.")
+    if ext in constants.IMAGE_EXTENSIONS:
+        return read_image_document(path)
+    raise ValueError(f"Unsupported document type '{ext}'.")
 
 
 def find_body_text_font_size(doc: Doc) -> float:
@@ -372,18 +408,14 @@ def choose_chunking_method(
     except Exception as exc:
         return {"chunking_method": constants.FALLBACK_METHOD, "reason": str(exc)}
 
-    if ext in constants.IMAGE_EXTENSIONS:
-        return {
-            "chunking_method": constants.RECURSIVE,
-            "reason": f"Image file ({ext}): no text structure is analyzed; used recursive.",
-        }
-
     try:
         doc = read_document(path, max_pages)
         points, rules = add_up_rule_points(doc)
         reason = explain_rule_points(points, rules)
         if doc.total_pages > doc.pages_read:
             reason += f" Only the first {doc.pages_read} of {doc.total_pages} pages were read."
+        if ext in constants.IMAGE_EXTENSIONS:
+            reason = f"OCR text extracted from image ({ext}) was scored: {reason}"
     except Exception as exc:
         return {
             "chunking_method": constants.FALLBACK_METHOD,
@@ -437,3 +469,5 @@ if __name__ == "__main__":
     print(json.dumps(output, indent=2))
     if args.out:
         Path(args.out).write_text(json.dumps(output, indent=2), encoding="utf-8")
+
+

@@ -2,3 +2,5 @@ pdfplumber
 pypdf
 pypandoc
 pydantic
+Pillow
+pytesseract

@@ -30,14 +30,29 @@ MIN_CLAUSE_MARKERS = 3
 
 PDF_EXTENSION = ".pdf"
 DOCX_EXTENSION = ".docx"
-TEXT_EXTENSIONS = {".md", ".txt"}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+TEXT_EXTENSIONS = {
+    ".md",
+    ".txt",
+    ".csv",
+    ".json",
+    ".html",
+    ".htm",
+    ".xml",
+    ".rtf",
+    ".log",
+    ".yaml",
+    ".yml",
+}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif"}
 SUPPORTED_EXTENSIONS = {
-    PDF_EXTENSION, DOCX_EXTENSION, *TEXT_EXTENSIONS, *IMAGE_EXTENSIONS,
+    PDF_EXTENSION,
+    DOCX_EXTENSION,
+    *TEXT_EXTENSIONS,
+    *IMAGE_EXTENSIONS,
 }
 
 FILE_NAME_RE = re.compile(
-    r"\.(pdf|docx?|xlsx?|pptx?|txt|csv|rtf|odt|jpe?g|png|tiff?|msg|eml)\s*$",
+    r"\.(pdf|docx?|xlsx?|pptx?|txt|csv|rtf|odt|jpe?g|png|tiff?|msg|eml|json|html?|xml|yaml|yml|log)\s*$",
     re.IGNORECASE,
 )
 CONTENTS_RE = re.compile(r"^\s*(table\s+of\s+)?contents\s*$", re.IGNORECASE)

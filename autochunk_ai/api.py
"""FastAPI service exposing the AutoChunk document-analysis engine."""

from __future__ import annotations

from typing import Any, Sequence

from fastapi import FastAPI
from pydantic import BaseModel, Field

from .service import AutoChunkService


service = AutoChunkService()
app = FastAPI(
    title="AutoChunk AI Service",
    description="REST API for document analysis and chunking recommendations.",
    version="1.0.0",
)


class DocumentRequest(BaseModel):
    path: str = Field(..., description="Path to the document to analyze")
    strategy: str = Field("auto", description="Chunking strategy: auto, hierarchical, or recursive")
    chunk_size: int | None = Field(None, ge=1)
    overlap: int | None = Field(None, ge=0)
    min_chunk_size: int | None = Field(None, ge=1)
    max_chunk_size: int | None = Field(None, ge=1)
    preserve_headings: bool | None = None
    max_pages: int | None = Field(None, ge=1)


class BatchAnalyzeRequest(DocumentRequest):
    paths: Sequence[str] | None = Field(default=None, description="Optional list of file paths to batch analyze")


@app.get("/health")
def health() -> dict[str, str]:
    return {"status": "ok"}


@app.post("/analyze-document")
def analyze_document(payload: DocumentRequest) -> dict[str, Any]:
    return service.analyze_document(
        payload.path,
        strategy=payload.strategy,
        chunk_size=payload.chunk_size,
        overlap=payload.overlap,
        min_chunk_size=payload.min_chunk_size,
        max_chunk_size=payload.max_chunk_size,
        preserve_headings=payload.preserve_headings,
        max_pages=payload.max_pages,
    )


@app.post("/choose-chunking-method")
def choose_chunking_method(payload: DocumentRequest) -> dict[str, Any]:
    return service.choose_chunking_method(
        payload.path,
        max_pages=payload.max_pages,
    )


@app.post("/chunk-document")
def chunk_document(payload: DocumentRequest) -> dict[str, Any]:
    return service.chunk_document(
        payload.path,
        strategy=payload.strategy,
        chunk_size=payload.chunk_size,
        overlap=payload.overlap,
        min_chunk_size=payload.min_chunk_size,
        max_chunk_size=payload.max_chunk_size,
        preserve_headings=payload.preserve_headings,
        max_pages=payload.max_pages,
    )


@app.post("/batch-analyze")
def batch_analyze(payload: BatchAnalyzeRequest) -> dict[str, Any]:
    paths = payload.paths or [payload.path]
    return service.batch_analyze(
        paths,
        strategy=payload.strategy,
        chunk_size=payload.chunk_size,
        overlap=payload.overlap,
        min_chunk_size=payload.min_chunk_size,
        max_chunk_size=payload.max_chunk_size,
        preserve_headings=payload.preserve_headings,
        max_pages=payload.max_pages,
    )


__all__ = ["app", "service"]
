@@ -1,0 +1,168 @@
+"""Service layer for the AutoChunk AI document recommendation and chunking engine."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+try:
+    from utils import choose_chunking_method, chunk_document
+except ImportError as exc:  # pragma: no cover - import fallback for package installs
+    raise ImportError(
+        "AutoChunk AI service requires the project root on PYTHONPATH; "
+        "import from the repository root or install the package."
+    ) from exc
+
+
+@dataclass
+class AutoChunkServiceConfig:
+    """Configuration for the AutoChunk service layer."""
+
+    default_strategy: str = "auto"
+    max_pages: int = 30
+    chunk_size: int = 500
+    overlap: int = 50
+    min_chunk_size: int = 100
+    max_chunk_size: int = 800
+    preserve_headings: bool = True
+
+
+class AutoChunkService:
+    """Thin service wrapper around the repository's chunking engine."""
+
+    def __init__(self, config: AutoChunkServiceConfig | None = None):
+        self.config = config or AutoChunkServiceConfig()
+
+    @staticmethod
+    def _normalise_path(path: str | Path) -> str:
+        return str(Path(path))
+
+    @staticmethod
+    def _serialize_chunk(chunk: Any) -> dict[str, Any]:
+        return {
+            "chunk_index": getattr(chunk, "chunk_index", None),
+            "strategy": getattr(chunk, "strategy", None),
+            "token_count": getattr(chunk, "token_count", None),
+            "text": getattr(chunk, "text", ""),
+            "start_page": getattr(chunk, "start_page", None),
+            "end_page": getattr(chunk, "end_page", None),
+            "metadata": getattr(chunk, "metadata", {}) or {},
+        }
+
+    def choose_chunking_method(
+        self,
+        path: str | Path,
+        *,
+        max_pages: int | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        resolved_path = self._normalise_path(path)
+        recommendation = choose_chunking_method(
+            resolved_path,
+            max_pages=max_pages or self.config.max_pages,
+            **kwargs,
+        )
+        recommendation.setdefault("path", resolved_path)
+        return recommendation
+
+    def chunk_document(
+        self,
+        path: str | Path,
+        *,
+        strategy: str = "auto",
+        chunk_size: int | None = None,
+        overlap: int | None = None,
+        min_chunk_size: int | None = None,
+        max_chunk_size: int | None = None,
+        preserve_headings: bool | None = None,
+        max_pages: int | None = None,
+    ) -> dict[str, Any]:
+        resolved_path = self._normalise_path(path)
+        chunks = chunk_document(
+            resolved_path,
+            strategy=strategy or self.config.default_strategy,
+            chunk_size=chunk_size if chunk_size is not None else self.config.chunk_size,
+            overlap=overlap if overlap is not None else self.config.overlap,
+            min_chunk_size=min_chunk_size if min_chunk_size is not None else self.config.min_chunk_size,
+            max_chunk_size=max_chunk_size if max_chunk_size is not None else self.config.max_chunk_size,
+            preserve_headings=preserve_headings if preserve_headings is not None else self.config.preserve_headings,
+            max_pages=max_pages or self.config.max_pages,
+        )
+        return {
+            "path": resolved_path,
+            "strategy": strategy or self.config.default_strategy,
+            "chunks": [self._serialize_chunk(item) for item in chunks],
+        }
+
+    def analyze_document(
+        self,
+        path: str | Path,
+        *,
+        strategy: str = "auto",
+        chunk_size: int | None = None,
+        overlap: int | None = None,
+        min_chunk_size: int | None = None,
+        max_chunk_size: int | None = None,
+        preserve_headings: bool | None = None,
+        max_pages: int | None = None,
+    ) -> dict[str, Any]:
+        resolved_path = self._normalise_path(path)
+        recommendation = self.choose_chunking_method(
+            resolved_path,
+            max_pages=max_pages,
+        )
+        chosen_method = recommendation.get("chunking_method", strategy or self.config.default_strategy)
+        chunk_payload = self.chunk_document(
+            resolved_path,
+            strategy=chosen_method,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            min_chunk_size=min_chunk_size,
+            max_chunk_size=max_chunk_size,
+            preserve_headings=preserve_headings,
+            max_pages=max_pages,
+        )
+        return {
+            "path": resolved_path,
+            "recommendation": recommendation,
+            "strategy": chosen_method,
+            "chunks": chunk_payload["chunks"],
+        }
+
+    def batch_analyze(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        strategy: str = "auto",
+        chunk_size: int | None = None,
+        overlap: int | None = None,
+        min_chunk_size: int | None = None,
+        max_chunk_size: int | None = None,
+        preserve_headings: bool | None = None,
+        max_pages: int | None = None,
+    ) -> dict[str, Any]:
+        results = []
+        for path in paths:
+            results.append(
+                self.analyze_document(
+                    path,
+                    strategy=strategy,
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    min_chunk_size=min_chunk_size,
+                    max_chunk_size=max_chunk_size,
+                    preserve_headings=preserve_headings,
+                    max_pages=max_pages,
+                )
+            )
+        return {
+            "total_documents": len(results),
+            "documents": results,
+        }
+
+
+service = AutoChunkService()
+
+
+__all__ = ["AutoChunkService", "AutoChunkServiceConfig", "service"]

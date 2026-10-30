@@ -1,0 +1,19 @@
+"""AutoChunk AI package exports."""
+
+from .api import app
+from .ingestion import ingest_document, ingest_folder
+from .knowledge_base import KnowledgeBase, KnowledgeEntry
+from .retrieval import retrieve
+from .service import AutoChunkService, AutoChunkServiceConfig, service
+
+__all__ = [
+    "KnowledgeBase",
+    "KnowledgeEntry",
+    "ingest_document",
+    "ingest_folder",
+    "retrieve",
+    "AutoChunkService",
+    "AutoChunkServiceConfig",
+    "service",
+    "app",
+]

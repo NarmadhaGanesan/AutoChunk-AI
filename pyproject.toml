@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autochunk-ai"
+version = "0.1.0"
+description = "Document-structure-aware chunking and retrieval support for AI pipelines."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pdfplumber",
+  "pypdf",
+  "pypandoc",
+  "pydantic",
+  "Pillow",
+  "pytesseract",
+  "fastapi",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[tool.setuptools]
+py-modules = [
+  "constants",
+  "models",
+  "utils",
+  "ingestion",
+  "knowledge_base",
+  "retrieval",
+  "eval_chunking_decisions",
+]
+
+[tool.setuptools.packages.find]
+include = ["autochunk_ai*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

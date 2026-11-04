@@ -1,10 +1,9 @@
 """Public API for AutoChunk AI."""
 
-from .ingestion import ingest_document, ingest_folder
-from .knowledge_base import KnowledgeBase, KnowledgeEntry
+from .chunking import chunk_document
+from .ingestion import KnowledgeBase, KnowledgeEntry, ingest_document, ingest_folder
 from .retrieval import retrieve
 from .scoring import choose_chunking_method
-from .chunking import chunk_document
 
 __all__ = [
     "KnowledgeBase",

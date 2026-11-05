@@ -30,8 +30,9 @@ SUPPORTED_EXTENSIONS = {
     ".tif", ".tiff", ".bmp", ".gif",
 }
 
+# Vite's production build emits URLs under /assets by default.
 if (REACT_DIST / "assets").is_dir():
-    app.mount("/react-assets", StaticFiles(directory=REACT_DIST / "assets"), name="react-assets")
+    app.mount("/assets", StaticFiles(directory=REACT_DIST / "assets"), name="react-assets")
 
 
 @app.get("/health")

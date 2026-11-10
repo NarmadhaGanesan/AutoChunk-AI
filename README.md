@@ -1,687 +1,132 @@
-"""Standalone document-structure analysis and chunking-method recommendation.
-
-This module recommends "hierarchical" or "recursive" chunking and can generate
-real chunks from PDF, DOCX, Markdown, text, and OCR text sources.
-"""
-
-import re
-from collections import Counter
-from itertools import pairwise
-from pathlib import Path
-from typing import Callable, Optional
-
-try:
-    import pdfplumber
-except ImportError:
-    pdfplumber = None
-
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None
-
-try:
-    import pypandoc
-except ImportError:
-    pypandoc = None
-
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
-
-try:
-    import pytesseract
-except ImportError:
-    pytesseract = None
-
-try:
-    from . import constants
-    from .models import Chunk, ChunkingConfig, Doc, Line
-except ImportError:  # supports running/importing these files from one folder
-    import constants
-    from models import Chunk, ChunkingConfig, Doc, Line
-
-
-DecisionCallback = Callable[[Doc, str], Optional[tuple[str, float]]]
-
-
-def _rough_token_count(text: str) -> int:
-    """Dependency-free approximation; replace with your embedding tokenizer if needed."""
-    return len(re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE))
-
-
-def _add_token_counts(doc: Doc) -> None:
-    offset = 0
-    for line in doc.lines:
-        line.tokens = _rough_token_count(line.text + "\n")
-        line.offset = offset
-        offset += line.tokens
-
-
-def _is_bold_font(fontname: str) -> bool:
-    name = (fontname or "").lower()
-    return any(k in name for k in ("bold", "black", "heavy", "semibold", ",b"))
-
-
-def _read_pdf_bookmarks(path: str) -> list[tuple[int, str]]:
-    if PdfReader is None:
-        return []
-
-    def walk_outline(items, level):
-        for item in items:
-            if isinstance(item, list):
-                yield from walk_outline(item, level + 1)
-            else:
-                yield level, (getattr(item, "title", "") or "").strip()
-
-    try:
-        return list(walk_outline(PdfReader(path).outline, 0))
-    except Exception:
-        return []
-
-
-def read_pdf_document(path: str, max_pages: int = constants.MAX_PAGES) -> Doc:
-    if pdfplumber is None:
-        raise ImportError("PDF support requires pdfplumber. Install it with: pip install pdfplumber")
-    with pdfplumber.open(path) as pdf:
-        total = len(pdf.pages)
-        doc = Doc(path=path, total_pages=total, pages_read=min(total, max_pages))
-        for page_no, page in enumerate(pdf.pages[:max_pages], start=1):
-            try:
-                extracted_lines = page.extract_text_lines(return_chars=True, strip=True)
-            except TypeError:
-                text = page.extract_text() or ""
-                extracted_lines = [
-                    {"text": line, "chars": []} for line in text.splitlines()
-                ]
-
-            for tl in extracted_lines:
-                text = (tl.get("text") or "").strip()
-                chars = [c for c in tl.get("chars", []) if not c.get("text", "").isspace()]
-                if not text:
-                    continue
-                if chars:
-                    sizes = sorted(round(c.get("size", 0) * 2) / 2 for c in chars)
-                    bold = sum(_is_bold_font(c.get("fontname")) for c in chars)
-                    size = sizes[len(sizes) // 2]
-                    bold_ratio = bold / len(chars)
-                else:
-                    size, bold_ratio = 0.0, 0.0
-                doc.lines.append(Line(text=text, page=page_no, size=size, bold=bold_ratio))
-            try:
-                page.close()
-            except Exception:
-                pass
-    doc.bookmarks = _read_pdf_bookmarks(path)
-    _add_token_counts(doc)
-    return doc
-
-
-def _text_to_doc(path: str, text: str) -> Doc:
-    doc = Doc(
-        path=path,
-        total_pages=1,
-        pages_read=1,
-        lines=[Line(text=t.strip(), page=1) for t in text.splitlines() if t.strip()],
-    )
-    _add_token_counts(doc)
-    return doc
-
-
-def read_text_document(path: str) -> Doc:
-    return _text_to_doc(path, Path(path).read_text(encoding="utf-8", errors="replace"))
-
-
-def read_docx_document(path: str) -> Doc:
-    if pypandoc is None:
-        raise ImportError("DOCX support requires pypandoc. Install it with: pip install pypandoc")
-    text = pypandoc.convert_file(
-        path, "commonmark", format="docx", extra_args=["-p", "--wrap=none"]
-    )
-    return _text_to_doc(path, text)
-
-
-def read_image_document(path: str) -> Doc:
-    """Extract OCR text from scanned documents and images, then score it like text."""
-    if Image is None:
-        raise ImportError(
-            "Image OCR requires Pillow. Install it with: pip install Pillow pytesseract"
-        )
-    if pytesseract is None:
-        raise ImportError(
-            "Image OCR requires pytesseract. Install it with: pip install Pillow pytesseract"
-        )
-
-    try:
-        image = Image.open(path)
-        try:
-            text = pytesseract.image_to_string(image)
-        finally:
-            image.close()
-    except Exception as exc:
-        raise RuntimeError(f"OCR failed for image '{path}': {exc}") from exc
-
-    cleaned = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-    return _text_to_doc(path, cleaned)
-
-
-def get_supported_extension(path: str) -> str:
-    ext = Path(path).suffix.lower()
-    if ext not in constants.SUPPORTED_EXTENSIONS:
-        supported = ", ".join(sorted(constants.SUPPORTED_EXTENSIONS))
-        raise ValueError(f"Unsupported extension '{ext}'. Supported extensions: {supported}")
-    return ext
-
-
-def read_document(path: str, max_pages: int = constants.MAX_PAGES) -> Doc:
-    ext = get_supported_extension(path)
-    if ext == constants.PDF_EXTENSION:
-        return read_pdf_document(path, max_pages)
-    if ext == constants.DOCX_EXTENSION:
-        return read_docx_document(path)
-    if ext in constants.TEXT_EXTENSIONS:
-        return read_text_document(path)
-    if ext in constants.IMAGE_EXTENSIONS:
-        return read_image_document(path)
-    raise ValueError(f"Unsupported document type '{ext}'.")
-
-
-def find_body_text_font_size(doc: Doc) -> float:
-    counts = Counter()
-    for line in doc.lines:
-        if line.size:
-            counts[line.size] += len(line.text)
-    return counts.most_common(1)[0][0] if counts else 0.0
-
-
-def find_page_headers_and_footers(doc: Doc) -> set[str]:
-    if doc.pages_read < 3:
-        return set()
-    pages_with = Counter()
-    page_keys = {(re.sub(r"\d+", "#", line.text.lower()), line.page) for line in doc.lines}
-    for text_key, _ in page_keys:
-        pages_with[text_key] += 1
-    return {
-        k for k, n in pages_with.items()
-        if n >= constants.REPEATED_LINE_SHARE * doc.pages_read
-    }
-
-
-def count_table_of_contents_entries(doc: Doc) -> int:
-    best = 0
-    for i, line in enumerate(doc.lines):
-        if constants.CONTENTS_RE.match(line.text):
-            window = doc.lines[i + 1:i + 120]
-            best = max(best, sum(1 for item in window if constants.TOC_ENTRY_RE.match(item.text)))
-    return best
-
-
-def find_headings_by_font(doc: Doc, body: float, skip: set[str]) -> tuple[list[int], int]:
-    if not body:
-        return [], 0
-
-    def heading_style(line):
-        if len(line.text) > constants.MAX_HEADING_CHARS:
-            return None
-        if not re.search(r"[A-Za-z]", line.text):
-            return None
-        if constants.TOC_ENTRY_RE.match(line.text):
-            return None
-        if re.sub(r"\d+", "#", line.text.lower()) in skip:
-            return None
-        if line.size >= body * constants.HEADING_SIZE_RATIO:
-            return ("size", line.size)
-        if line.bold >= constants.BOLD_RATIO and line.size >= body * 0.95:
-            return ("bold", body)
-        return None
-
-    styles = [heading_style(line) for line in doc.lines]
-    i = 0
-    while i < len(styles):
-        j = i
-        while j + 1 < len(styles) and styles[i] is not None and styles[j + 1] == styles[i]:
-            j += 1
-        if styles[i] is not None and j - i + 1 > constants.MAX_HEADING_RUN:
-            for k in range(i, j + 1):
-                styles[k] = None
-        i = j + 1
-
-    used = Counter(s for s in styles if s)
-    levels = {s for s, n in used.items() if n >= constants.MIN_HEADING_STYLE_LINES}
-    return [i for i, s in enumerate(styles) if s in levels], len(levels)
-
-
-def find_markdown_headings(doc: Doc) -> tuple[list[int], int]:
-    idx, levels = [], set()
-    for i, line in enumerate(doc.lines):
-        match = constants.MARKDOWN_HEADING_RE.match(line.text)
-        if match:
-            idx.append(i)
-            levels.add(len(match.group(1)))
-    return idx, len(levels)
-
-
-def find_numbered_headings(doc: Doc) -> list[int]:
-    return [
-        i for i, line in enumerate(doc.lines)
-        if constants.DECIMAL_HEADING_RE.match(line.text)
-        and not constants.TOC_ENTRY_RE.match(line.text)
-    ]
-
-
-def find_numbered_clause_levels(doc: Doc) -> tuple[list[int], bool]:
-    hits = {level: [] for level in constants.CLAUSE_RES}
-    for i, line in enumerate(doc.lines):
-        text = line.text
-        if constants.CLAUSE_RES[3].match(text):
-            hits[3].append(i)
-        elif constants.CLAUSE_RES[2].match(text):
-            hits[2].append(i)
-        elif constants.CLAUSE_RES[1].match(text):
-            hits[1].append(i)
-
-    if hits[3] and not any(
-        re.match(r"^\(?(ii|iii)[.)]", doc.lines[i].text, re.IGNORECASE)
-        for i in hits[3]
-    ):
-        hits[2] = sorted(hits[2] + hits[3])
-        hits[3] = []
-
-    present = [level for level, indexes in hits.items() if len(indexes) >= constants.MIN_CLAUSE_MARKERS]
-    nested = False
-    if len(present) >= 2:
-        markers = sorted((i, level) for level in present for i in hits[level])
-        nested = sum(1 for (_, a), (_, b) in pairwise(markers) if b > a) >= 2
-    return present, nested
-
-
-def add_up_rule_points(doc: Doc) -> tuple[int, list[tuple[str, int]]]:
-    rules = []
-    total_tokens = doc.total_tokens
-    lines = doc.lines
-
-    marks = [
-        (level, title) for level, title in doc.bookmarks
-        if title and not constants.FILE_NAME_RE.search(title)
-    ]
-    depth = len({level for level, _ in marks})
-    if len(marks) >= 4 and depth >= 2:
-        rules.append((f"bookmark outline {depth} levels deep with {len(marks)} entries", 3))
-    elif len(marks) >= 4:
-        rules.append((f"flat bookmark outline with {len(marks)} entries", 1))
-
-    if count_table_of_contents_entries(doc) >= 3:
-        rules.append(("printed table of contents", 3))
-
-    md_idx, md_levels = find_markdown_headings(doc)
-    if md_levels >= 2:
-        rules.append((f"markdown headings at {md_levels} levels", 4))
-
-    body = find_body_text_font_size(doc)
-    font_idx, font_levels = find_headings_by_font(doc, body, find_page_headers_and_footers(doc))
-    if font_levels >= 2:
-        rules.append((f"{font_levels} heading font levels above body text", 2))
-    elif font_levels == 1:
-        rules.append(("one heading font level above body text", 1))
-
-    dec_idx = find_numbered_headings(doc)
-    if len(dec_idx) >= 3:
-        rules.append((f"{len(dec_idx)} decimal-numbered headings (1.1 or deeper)", 3))
-
-    clause_present, nested = find_numbered_clause_levels(doc)
-    if nested:
-        rules.append((f"nested numbered clauses ({len(clause_present)} levels)", 3))
-    elif clause_present:
-        rules.append(("numbered clauses (one level)", 2))
-
-    heading_idx = sorted(set(font_idx) | set(md_idx) | set(dec_idx))
-    n_head = len(heading_idx)
-    gaps = []
-    if n_head:
-        bounds = [lines[i].offset for i in heading_idx] + [total_tokens]
-        gaps = [b - a for a, b in pairwise(bounds)]
-    avg_section = sum(gaps) / len(gaps) if gaps else 0
-
-    if n_head >= 5 and total_tokens:
-        first, last = lines[heading_idx[0]].offset, lines[heading_idx[-1]].offset
-        spread = (last - first) / total_tokens
-        if spread >= 0.5:
-            rules.append((f"{n_head} headings spread over {spread:.0%} of the document", 2))
-
-    if n_head >= 10 and avg_section < 40:
-        rules.append((f"{n_head} headings only {avg_section:.0f} tokens apart on average (form or table labels, not sections)", -3))
-    elif n_head >= 3 and 50 <= avg_section <= 1500:
-        rules.append((f"sections average {avg_section:.0f} tokens", 1))
-
-    if n_head < 3:
-        rules.append(("no headings found" if not n_head else f"only {n_head} heading{'s' if n_head != 1 else ''} found", -3))
-
-    if lines:
-        prose = sum(1 for line in lines if len(line.text.split()) >= 10) / len(lines)
-        if prose >= 0.6:
-            rules.append((f"{prose:.0%} of lines are running prose", -2))
-        form = sum(
-            1 for line in lines
-            if constants.FORM_FIELD_RE.match(line.text)
-            and not constants.NUMBERED_ITEM_RE.match(line.text)
-        ) / len(lines)
-        if form >= 0.25:
-            rules.append((f"{form:.0%} of lines are form fields (Label: value)", -2))
-
-    if total_tokens < 400:
-        rules.append((f"tiny document ({total_tokens} tokens)", -3))
-    return sum(points for _, points in rules), rules
-
-
-def explain_rule_points(points: int, rules: list[tuple[str, int]]) -> str:
-    details = "; ".join(f"{description} ({points:+d})" for description, points in rules) or "no rule matched"
-    return (
-        f"Rule score {points} (hierarchical at >= {constants.HIERARCHICAL_AT}, "
-        f"recursive at <= {constants.RECURSIVE_AT}): {details}."
-    )
-
-
-def choose_chunking_method(
-    path: str,
-    llm_config: dict | None = None,
-    max_pages: int = constants.MAX_PAGES,
-    decision_fn: DecisionCallback | None = None,
-) -> dict:
-    """Recommend a chunking method.
-
-    `decision_fn` is only called when the rule score is ambiguous (2–5).
-    It should accept `(doc, rule_reason)` and return `(method, confidence)` or None.
-    Without a callback, ambiguous cases use the recursive fallback.
-    """
-    try:
-        ext = get_supported_extension(path)
-    except Exception as exc:
-        return {"chunking_method": constants.FALLBACK_METHOD, "reason": str(exc)}
-
-    try:
-        doc = read_document(path, max_pages)
-        points, rules = add_up_rule_points(doc)
-        reason = explain_rule_points(points, rules)
-        if doc.total_pages > doc.pages_read:
-            reason += f" Only the first {doc.pages_read} of {doc.total_pages} pages were read."
-        if ext in constants.IMAGE_EXTENSIONS:
-            reason = f"OCR text extracted from image ({ext}) was scored: {reason}"
-    except Exception as exc:
-        return {
-            "chunking_method": constants.FALLBACK_METHOD,
-            "reason": f"Rule-based check failed ({type(exc).__name__}: {exc}); used {constants.FALLBACK_METHOD}.",
-        }
-
-    if points >= constants.HIERARCHICAL_AT:
-        return {"chunking_method": constants.HIERARCHICAL, "reason": reason}
-    if points <= constants.RECURSIVE_AT:
-        return {"chunking_method": constants.RECURSIVE, "reason": reason}
-
-    if decision_fn is None:
-        return {
-            "chunking_method": constants.FALLBACK_METHOD,
-            "reason": f"{reason} Score is ambiguous; no decision_fn was supplied, so used {constants.FALLBACK_METHOD}.",
-        }
-
-    try:
-        decision = decision_fn(doc, reason)
-        if not decision:
-            raise ValueError("decision_fn returned no decision")
-        method, confidence = decision
-        if method not in {constants.HIERARCHICAL, constants.RECURSIVE}:
-            raise ValueError(f"Invalid method from decision_fn: {method!r}")
-        confidence = max(0.0, min(1.0, float(confidence)))
-        if confidence < constants.HIERARCHICAL_PROBABILITY:
-            method = constants.RECURSIVE
-        return {
-            "chunking_method": method,
-            "reason": f"{reason} LLM/callback decision: {method} (confidence {confidence:.2f}).",
-        }
-    except Exception as exc:
-        return {
-            "chunking_method": constants.FALLBACK_METHOD,
-            "reason": f"{reason} Decision callback failed ({type(exc).__name__}: {exc}); used {constants.FALLBACK_METHOD}.",
-        }
-
-
-def _clean_line(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _is_heading_line(text: str) -> bool:
-    cleaned = _clean_line(text)
-    if not cleaned:
-        return False
-    if constants.MARKDOWN_HEADING_RE.match(cleaned):
-        return True
-    if re.match(r"^\d{1,3}(?:\.\d{1,3})+\.?\s+[A-Z]", cleaned):
-        return True
-    if len(cleaned.split()) <= 12 and cleaned.endswith(":"):
-        return True
-    return False
-
-
-def _doc_to_text(doc: Doc) -> str:
-    parts = []
-    for line in doc.lines:
-        text = _clean_line(line.text)
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
-
-
-def _split_text_by_tokens(text: str, chunk_size: int, overlap: int, min_chunk_size: int, max_chunk_size: int) -> list[str]:
-    normalized = _clean_line(text)
-    if not normalized:
-        return []
-    tokens = re.findall(r"\S+", normalized)
-    if len(tokens) <= chunk_size:
-        return [normalized]
-
-    chunk_size = max(1, min(max_chunk_size, chunk_size))
-    overlap = max(0, min(overlap, chunk_size - 1))
-    step = max(1, chunk_size - overlap)
-    chunks: list[str] = []
-
-    for start in range(0, len(tokens), step):
-        end = min(len(tokens), start + chunk_size)
-        piece = tokens[start:end]
-        if len(piece) < min_chunk_size:
-            if chunks:
-                prev = re.findall(r"\S+", chunks[-1])
-                merged = prev + piece
-                if len(merged) <= max_chunk_size:
-                    chunks[-1] = " ".join(merged)
-                    continue
-            if start + chunk_size >= len(tokens):
-                chunks.append(" ".join(piece))
-            continue
-        chunks.append(" ".join(piece))
-
-    if not chunks:
-        chunks = [normalized]
-    return chunks
-
-
-def _section_blocks_from_doc(doc: Doc) -> list[tuple[str | None, str]]:
-    sections: list[tuple[str | None, str]] = []
-    current_heading: str | None = None
-    current_lines: list[str] = []
-
-    for line in doc.lines:
-        text = _clean_line(line.text)
-        if not text:
-            continue
-        if _is_heading_line(text):
-            if current_lines:
-                sections.append((current_heading, " ".join(current_lines)))
-                current_lines = []
-            current_heading = text
-        else:
-            current_lines.append(text)
-
-    if current_lines or current_heading is not None:
-        sections.append((current_heading, " ".join(current_lines)))
-
-    if not sections:
-        return [(None, _doc_to_text(doc))]
-    return sections
-
-
-def _build_chunks_from_sections(
-    doc: Doc,
-    config: ChunkingConfig,
-    method: str,
-) -> list[Chunk]:
-    sections = _section_blocks_from_doc(doc)
-    chunks: list[Chunk] = []
-    pages = doc.pages_read
-    section_cursor = 0
-
-    for section_idx, (heading, body) in enumerate(sections):
-        section_text = body
-        if heading and config.preserve_headings:
-            section_text = f"{heading}\n{body}".strip()
-
-        if not section_text.strip():
-            continue
-
-        subchunks = _split_text_by_tokens(
-            section_text,
-            chunk_size=config.chunk_size,
-            overlap=config.overlap,
-            min_chunk_size=config.min_chunk_size,
-            max_chunk_size=config.max_chunk_size,
-        )
-
-        if not subchunks:
-            continue
-
-        for chunk_index, chunk_text in enumerate(subchunks, start=1):
-            token_count = _rough_token_count(chunk_text)
-            start_page = max(1, min(pages, (section_idx % max(1, pages)) + 1))
-            chunks.append(
-                Chunk(
-                    text=chunk_text,
-                    chunk_index=len(chunks) + 1,
-                    strategy=method,
-                    token_count=token_count,
-                    start_page=start_page,
-                    end_page=start_page,
-                    metadata={
-                        "source_path": doc.path,
-                        "section_index": section_idx,
-                        "section_heading": heading,
-                        "preserve_headings": config.preserve_headings,
-                        "overlap": config.overlap,
-                        "chunk_size": config.chunk_size,
-                        "min_chunk_size": config.min_chunk_size,
-                        "max_chunk_size": config.max_chunk_size,
-                    },
-                )
-            )
-            section_cursor += 1
-
-    if not chunks:
-        chunk_text = _doc_to_text(doc)
-        chunks.append(
-            Chunk(
-                text=chunk_text,
-                chunk_index=1,
-                strategy=method,
-                token_count=_rough_token_count(chunk_text),
-                start_page=1,
-                end_page=max(1, min(doc.pages_read, 1)),
-                metadata={"source_path": doc.path, "fallback": True},
-            )
-        )
-    return chunks
-
-
-def chunk_document(
-    path: str,
-    strategy: str = "auto",
-    chunk_size: int = constants.DEFAULT_CHUNK_SIZE,
-    overlap: int = constants.DEFAULT_CHUNK_OVERLAP,
-    min_chunk_size: int = constants.DEFAULT_MIN_CHUNK_SIZE,
-    max_chunk_size: int = constants.DEFAULT_MAX_CHUNK_SIZE,
-    preserve_headings: bool = True,
-    max_pages: int = constants.MAX_PAGES,
-) -> list[Chunk]:
-    """Generate chunk objects for a document using the chosen strategy.
-
-    `strategy` can be: "auto", "hierarchical", or "recursive".
-    """
-    if strategy not in constants.CHUNKING_STRATEGIES:
-        raise ValueError(f"Unsupported strategy '{strategy}'. Use one of: {sorted(constants.CHUNKING_STRATEGIES)}")
-
-    if strategy == "auto":
-        recommendation = choose_chunking_method(path, max_pages=max_pages)
-        strategy = recommendation["chunking_method"]
-
-    config = ChunkingConfig(
-        strategy=strategy,
-        chunk_size=max(1, chunk_size),
-        overlap=max(0, min(overlap, max(chunk_size, 1) - 1)),
-        min_chunk_size=max(1, min_chunk_size),
-        max_chunk_size=max(chunk_size, max_chunk_size),
-        preserve_headings=preserve_headings,
-    )
-
-    doc = read_document(path, max_pages=max_pages)
-    if strategy == constants.HIERARCHICAL:
-        return _build_chunks_from_sections(doc, config, strategy)
-    return _build_chunks_from_sections(doc, config, strategy)
-
-
-def _chunking_demo(path: str, strategy: str = "auto", **kwargs) -> list[dict]:
-    return [
-        {
-            "chunk_index": chunk.chunk_index,
-            "strategy": chunk.strategy,
-            "token_count": chunk.token_count,
-            "text": chunk.text,
-            "start_page": chunk.start_page,
-            "end_page": chunk.end_page,
-            "metadata": chunk.metadata,
-        }
-        for chunk in chunk_document(path, strategy=strategy, **kwargs)
-    ]
-
-
-if __name__ == "__main__":
-    import argparse
-    import json
-
-    parser = argparse.ArgumentParser(description="Recommend a document chunking method and optionally generate chunks.")
-    parser.add_argument("path", help="Path to a PDF, DOCX, TXT, MD, JPG, JPEG, or PNG file")
-    parser.add_argument("--max-pages", type=int, default=constants.MAX_PAGES)
-    parser.add_argument("--strategy", choices=["auto", "hierarchical", "recursive"], default="auto")
-    parser.add_argument("--chunk", action="store_true", help="Generate chunks instead of just printing the recommendation")
-    parser.add_argument("--chunk-size", type=int, default=constants.DEFAULT_CHUNK_SIZE)
-    parser.add_argument("--overlap", type=int, default=constants.DEFAULT_CHUNK_OVERLAP)
-    parser.add_argument("--min-chunk-size", type=int, default=constants.DEFAULT_MIN_CHUNK_SIZE)
-    parser.add_argument("--max-chunk-size", type=int, default=constants.DEFAULT_MAX_CHUNK_SIZE)
-    parser.add_argument("--out", help="Optional path to write JSON output")
-    args = parser.parse_args()
-
-    if args.chunk:
-        chunks = _chunking_demo(
-            args.path,
-            strategy=args.strategy,
-            chunk_size=args.chunk_size,
-            overlap=args.overlap,
-            min_chunk_size=args.min_chunk_size,
-            max_chunk_size=args.max_chunk_size,
-            max_pages=args.max_pages,
-        )
-        print(json.dumps({str(Path(args.path)): chunks}, indent=2))
-        if args.out:
-            Path(args.out).write_text(json.dumps({str(Path(args.path)): chunks}, indent=2), encoding="utf-8")
-    else:
-        result = choose_chunking_method(args.path, max_pages=args.max_pages)
-        output = {str(Path(args.path)): result}
-        print(json.dumps(output, indent=2))
-        if args.out:
-            Path(args.out).write_text(json.dumps(output, indent=2), encoding="utf-8")
+# AutoChunk-AI
+
+AutoChunk-AI automatically decides whether a document is better suited for hierarchical chunking or recursive chunking, with rule-based analysis and an optional AI-backed fallback for ambiguous cases.
+
+It is built for document-structure-aware retrieval and chunk generation across PDFs, DOCX files, Markdown, plain text, and OCR from scanned images.
+
+## Features
+
+- Detects document structure using headings, numbering, bookmarks, and formatting cues
+- Recommends either `hierarchical` or `recursive` chunking
+- Splits documents into chunks while preserving heading context
+- Supports common text and document formats
+- Exposes a FastAPI service for analysis and upload processing
+- Includes tests for core chunking behavior and API endpoints
+
+## Supported file types
+
+- PDF
+- DOCX
+- Markdown (`.md`)
+- Text (`.txt`)
+- CSV, JSON, HTML, XML, YAML, RTF, LOG
+- Images with OCR support (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`, `.gif`)
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+Or install as a package:
+
+```bash
+pip install -e .
+```
+
+## Quick start
+
+```bash
+python -m autochunk_ai --help
+```
+
+Example recommendation:
+
+```bash
+python -m autochunk_ai sample.pdf
+```
+
+Example chunk generation:
+
+```bash
+python -m autochunk_ai sample.md --strategy auto --chunk
+```
+
+## Python usage
+
+```python
+from utils import choose_chunking_method, chunk_document
+
+recommendation = choose_chunking_method("sample.pdf")
+print(recommendation)
+
+chunks = chunk_document("sample.md", strategy="hierarchical", chunk_size=500, overlap=50)
+print(len(chunks))
+```
+
+## API usage
+
+The FastAPI app exposes an upload-based analysis endpoint:
+
+```bash
+uvicorn autochunk_ai.api:app --reload
+```
+
+Then upload a document to:
+
+- `POST /api/analyze`
+
+Example fields include:
+
+- `strategy`: `auto`, `hierarchical`, or `recursive`
+- `chunk_size`
+- `overlap`
+- `min_chunk_size`
+- `max_chunk_size`
+- `max_pages`
+- `preserve_headings`
+
+## Error handling
+
+The service handles document and chunk-generation failures explicitly instead of failing silently.
+
+- unsupported or unreadable files are rejected with clear validation messages
+- chunk-generation failures are logged server-side
+- API responses surface a structured `chunking_error` payload when chunking cannot complete
+- internal exception details are kept out of the client-facing response
+
+## Project structure
+
+```text
+.
+├── autochunk_ai/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── api.py
+│   ├── chunking.py
+│   ├── ingestion.py
+│   ├── knowledge_base.py
+│   ├── retrieval.py
+│   ├── scoring.py
+│   └── service.py
+├── constants.py
+├── models.py
+├── utils.py
+├── tests/
+│   ├── test_api.py
+│   └── test_core.py
+├── web/
+├── frontend/
+├── requirements.txt
+├── pyproject.toml
+├── UI_SETUP.md
+└── README.md
+```
+
+## License
+
+This project is intended for research and experimentation in document-aware AI retrieval workflows.
+
+## Notes
+
+The project is designed to support robust chunk recommendation in retrieval pipelines, with explicit handling for ambiguous cases and document-structure-driven selection.

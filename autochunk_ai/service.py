@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,6 +22,9 @@ try:
 except ImportError:  # pragma: no cover
     from autochunk_ai.utils import choose_chunking_method as _choose_chunking_method
     from autochunk_ai.utils import chunk_document as _chunk_document
+
+
+logger = logging.getLogger(__name__)
 
 
 class AutoChunkService:
@@ -55,20 +59,27 @@ class AutoChunkService:
         if strategy and strategy.lower() != "auto":
             recommendation = strategy.lower()
 
-        chunks = []
+        chunk_args = {
+            "strategy": recommendation,
+            "chunk_size": chunk_size or 500,
+            "overlap": overlap if overlap is not None else 50,
+            "min_chunk_size": min_chunk_size or 100,
+            "max_chunk_size": max_chunk_size or 800,
+            "preserve_headings": preserve_headings if preserve_headings is not None else True,
+            "max_pages": max_pages or 30,
+        }
+        chunking_error = None
         try:
-            chunk_args = {
-                "strategy": recommendation,
-                "chunk_size": chunk_size or 500,
-                "overlap": overlap if overlap is not None else 50,
-                "min_chunk_size": min_chunk_size or 100,
-                "max_chunk_size": max_chunk_size or 800,
-                "preserve_headings": preserve_headings if preserve_headings is not None else True,
-                "max_pages": max_pages or 30,
-            }
             chunks = _chunk_document(str(path), **chunk_args)
-        except Exception:
+        except Exception as exc:
+            # Keep analysis results available, but make failure visible to callers;
+            # log the traceback for diagnosis without exposing internals in the response.
+            logger.exception("Chunk generation failed during document analysis")
             chunks = []
+            chunking_error = {
+                "code": "chunking_failed",
+                "message": "Chunk generation failed; see server logs for details.",
+            }
 
         return {
             "path": str(path),
@@ -87,6 +98,7 @@ class AutoChunkService:
                 }
                 for chunk in chunks
             ],
+            "chunking_error": chunking_error,
         }
 
     def choose_chunking_method(self, path: str | Path, *, max_pages: int | None = None) -> dict[str, Any]:

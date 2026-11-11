@@ -1,34 +1,47 @@
 # AutoChunk-AI
 
-AutoChunk-AI automatically decides whether a document is better suited for hierarchical chunking or recursive chunking, with rule-based analysis and an optional AI-backed fallback for ambiguous cases.
+**Choose the right chunking strategy for every document.** AutoChunk-AI analyzes document structure and recommends either hierarchical or recursive chunking. When the structure is ambiguous, it can use an AI-assisted fallback.
 
-It is built for document-structure-aware retrieval and chunk generation across PDFs, DOCX files, Markdown, plain text, and OCR from scanned images.
+Designed for document-aware retrieval and chunk generation, AutoChunk-AI supports PDFs, DOCX files, Markdown, plain text, and OCR from scanned images.
+
+## Contents
+
+- [Features](#features)
+- [Supported file types](#supported-file-types)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Python usage](#python-usage)
+- [API usage](#api-usage)
+- [Error handling](#error-handling)
+- [Project structure](#project-structure)
+- [License](#license)
 
 ## Features
 
-- Detects document structure using headings, numbering, bookmarks, and formatting cues
-- Recommends either `hierarchical` or `recursive` chunking
-- Splits documents into chunks while preserving heading context
-- Supports common text and document formats
-- Exposes a FastAPI service for analysis and upload processing
-- Includes tests for core chunking behavior and API endpoints
+- Analyzes headings, numbering, bookmarks, and formatting cues to detect document structure.
+- Recommends `hierarchical` or `recursive` chunking.
+- Generates chunks while preserving heading context.
+- Supports common document, text, and image formats.
+- Provides a FastAPI service for document analysis and upload processing.
+- Includes tests for core chunking behavior and API endpoints.
 
 ## Supported file types
 
-- PDF
-- DOCX
-- Markdown (`.md`)
-- Text (`.txt`)
-- CSV, JSON, HTML, XML, YAML, RTF, LOG
-- Images with OCR support (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`, `.gif`)
+| Category | Formats |
+| --- | --- |
+| Documents | PDF, DOCX |
+| Text and data | Markdown (`.md`), plain text (`.txt`), CSV, JSON, HTML, XML, YAML, RTF, LOG |
+| Images (OCR) | `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`, `.gif` |
 
 ## Installation
+
+Install the project dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Or install as a package:
+Or install the project in editable mode:
 
 ```bash
 pip install -e .
@@ -36,17 +49,19 @@ pip install -e .
 
 ## Quick start
 
+See the available command-line options:
+
 ```bash
 python -m autochunk_ai --help
 ```
 
-Example recommendation:
+Get a chunking recommendation for a document:
 
 ```bash
 python -m autochunk_ai sample.pdf
 ```
 
-Example chunk generation:
+Generate chunks using automatic strategy selection:
 
 ```bash
 python -m autochunk_ai sample.md --strategy auto --chunk
@@ -60,40 +75,49 @@ from utils import choose_chunking_method, chunk_document
 recommendation = choose_chunking_method("sample.pdf")
 print(recommendation)
 
-chunks = chunk_document("sample.md", strategy="hierarchical", chunk_size=500, overlap=50)
+chunks = chunk_document(
+    "sample.md",
+    strategy="hierarchical",
+    chunk_size=500,
+    overlap=50,
+)
 print(len(chunks))
 ```
 
 ## API usage
 
-The FastAPI app exposes an upload-based analysis endpoint:
+Start the FastAPI application with Uvicorn:
 
 ```bash
 uvicorn autochunk_ai.api:app --reload
 ```
 
-Then upload a document to:
+The upload-based analysis endpoint is:
 
-- `POST /api/analyze`
+```text
+POST /api/analyze
+```
 
-Example fields include:
+Available analysis fields include:
 
-- `strategy`: `auto`, `hierarchical`, or `recursive`
-- `chunk_size`
-- `overlap`
-- `min_chunk_size`
-- `max_chunk_size`
-- `max_pages`
-- `preserve_headings`
+| Field | Description |
+| --- | --- |
+| `strategy` | `auto`, `hierarchical`, or `recursive` |
+| `chunk_size` | Desired chunk size |
+| `overlap` | Overlap between chunks |
+| `min_chunk_size` | Minimum chunk size |
+| `max_chunk_size` | Maximum chunk size |
+| `max_pages` | Maximum pages to process |
+| `preserve_headings` | Whether to preserve heading context |
 
 ## Error handling
 
-The service handles document and chunk-generation failures explicitly instead of failing silently.
+AutoChunk-AI handles document processing and chunk-generation failures explicitly:
 
-- unsupported or unreadable files are rejected with clear validation messages
-- chunk-generation failures are logged server-side
-- API responses surface a structured `chunking_error` payload when chunking cannot complete
-- internal exception details are kept out of the client-facing response
+- Unsupported or unreadable files receive clear validation messages.
+- Chunk-generation failures are logged on the server.
+- If chunking cannot complete, API responses include a structured `chunking_error` payload.
+- Internal exception details are not exposed in client-facing responses.
 
 ## Project structure
 
@@ -126,7 +150,3 @@ The service handles document and chunk-generation failures explicitly instead of
 ## License
 
 This project is intended for research and experimentation in document-aware AI retrieval workflows.
-
-## Notes
-
-The project is designed to support robust chunk recommendation in retrieval pipelines, with explicit handling for ambiguous cases and document-structure-driven selection.

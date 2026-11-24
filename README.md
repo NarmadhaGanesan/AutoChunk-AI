@@ -8,8 +8,6 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/React-Dashboard-61DAFB?logo=react&logoColor=20232A)](https://react.dev/)
-[![License](https://img.shields.io/badge/License-Research%20%26%20Experimentation-blueviolet)](#-license)
 
 [Quick Start](#-quick-start) • [Web Interfaces](#-web-interfaces) • [Python API](#-python-api) • [CLI](#-command-line) • [Documentation](#-project-map)
 
